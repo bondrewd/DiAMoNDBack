@@ -1136,20 +1136,44 @@ def align_to_backbone_terminal(seq, crd, ter, xyz_list, single_resid):
 
 ### Scoring metrics ###
     
-def clash_score(trj, min_cut=0.12, max_cut=0.5):
-
+def get_res_idxs_cut(trj, thresh=0.12, Ca_cut=2.0):
+    Ca_idxs = []
+    for i, atom in enumerate(trj.top.atoms):
+        if 'CA' in atom.name:
+            Ca_idxs.append(i)
+    Ca_idxs = np.array(Ca_idxs)
+    Ca_xyzs = trj.xyz[0, Ca_idxs]
+    n_res = trj.n_residues
     pairs = []
-    pair_names = []
-    a_list = [a.name for a in trj.top.atoms]
+    for i in range(n_res):
+        for j in range(i-1):
+            if np.linalg.norm(Ca_xyzs[i]-Ca_xyzs[j]) < Ca_cut:
+                pairs.append((i, j))
+    dist, pairs = md.compute_contacts(trj, contacts=pairs, scheme='closest')
+    
+    # look at sidechain-heavy only
+    neighbor_pairs = [(i, i+1) for i in range(trj.n_residues-1) if (
+        trj.top.residue(i).name != 'GLY' and trj.top.residue(i+1).name != 'GLY')]
+    
+    neighbor_dist, neighbor_pairs = md.compute_contacts(trj, contacts=neighbor_pairs, scheme='sidechain-heavy')
+    dist = np.concatenate([dist, neighbor_dist], axis=-1)
+    pairs = np.concatenate([pairs, neighbor_pairs], axis=0)
+    res_closes = list()
+    for n_res in range(trj.top.n_residues):
+        pair_mask = np.array([n_res in i for i in pairs])
+        res_close = np.any(dist[0, pair_mask] < thresh)
+        res_closes.append(res_close)
+    res_closes = np.array(res_closes)
+    return res_closes
+    
+def clash_res_percent(viz_gen, thresh=0.12, Ca_cut=2.0):
+    all_res_closes = list()
 
-    for i, i_name in enumerate(a_list):
-        for j, j_name in enumerate(a_list[:i]):
-            pairs.append([i,j])
-            pair_names.append([i_name, j_name])
+    for n in range(len(viz_gen)):
+        res_closes = get_res_idxs_cut(viz_gen[n], thresh=thresh, Ca_cut=Ca_cut)
+        all_res_closes.append(res_closes)
         
-    dists = md.compute_distances(trj, pairs)
-    ratio = 100*np.sum(dists < min_cut) / np.sum(dists < max_cut)
-    return ratio 
+    return 100 * sum([sum(i) for i in all_res_closes]) / sum([i.shape[0] for i in all_res_closes])
 
 def rmsd_score(trj_ref, trj_gen):
     
